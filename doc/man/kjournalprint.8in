@@ -41,7 +41,10 @@ changes are colored for terminal.
 .INDENT 0.0
 .TP
 \fB\-l\fP, \fB\-\-limit\fP \fIlimit\fP
-Limits the number of displayed changes.
+Limits the number of displayed changes (aka \fItail\fP).
+.TP
+\fB\-C\fP, \fB\-\-cutoff\fP \fIlimit\fP
+Stop after printing \fIlimit\fP changes (aka \fIhead\fP).
 .TP
 \fB\-s\fP, \fB\-\-serial\fP \fIsoa\fP
 Start at specific SOA serial.

@@ -18,7 +18,10 @@ Options
 .......
 
 **-l**, **--limit** *limit*
-  Limits the number of displayed changes.
+  Limits the number of displayed changes (aka *tail*).
+
+**-C**, **--cutoff** *limit*
+  Stop after printing *limit* changes (aka *head*).
 
 **-s**, **--serial** *soa*
   Start at specific SOA serial.

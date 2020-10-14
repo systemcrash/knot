@@ -37,6 +37,7 @@ static void print_help(void)
 	       "\n"
 	       "Parameters:\n"
 	       " -l, --limit <num>  Read only <num> newest changes.\n"
+	       " -C, --cutoff <num> Stop after printing <num> changesets.\n"
 	       " -s, --serial <soa> Start with specific SOA serial.\n"
 	       " -n, --no-color     Get output without terminal coloring.\n"
 	       " -z, --zone-list    Instead of reading jurnal, display the list\n"
@@ -57,6 +58,7 @@ typedef struct {
 	int limit;
 	int start_at;
 	int counter;
+	int cutoff;
 	long from_serial;
 } print_params_t;
 
@@ -155,7 +157,7 @@ static int count_changeset_cb(bool special, const changeset_t *ch, void *ctx)
 static int print_changeset_cb(bool special, const changeset_t *ch, void *ctx)
 {
 	print_params_t *params = ctx;
-	if (ch != NULL && params->counter++ >= params->start_at) {
+	if (ch != NULL && params->counter++ >= params->start_at && params->cutoff-- > 0) {
 		if (params->debug) {
 			print_changeset_debugmode(ch);
 		} else {
@@ -304,11 +306,13 @@ int main(int argc, char *argv[])
 		.check = false,
 		.depth = false,
 		.limit = -1,
+		.cutoff = INT_MAX,
 		.from_serial = -1,
 	};
 
 	struct option opts[] = {
 		{ "limit",     required_argument, NULL, 'l' },
+		{ "cutoff",    required_argument, NULL, 'C' },
 		{ "serial",    required_argument, NULL, 's' },
 		{ "no-color",  no_argument,       NULL, 'n' },
 		{ "depth",     no_argument,       NULL, 'D' },
@@ -321,10 +325,16 @@ int main(int argc, char *argv[])
 	};
 
 	int opt = 0;
-	while ((opt = getopt_long(argc, argv, "l:s:nDzcdhV", opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "l:C:s:nDzcdhV", opts, NULL)) != -1) {
 		switch (opt) {
 		case 'l':
 			if (str_to_int(optarg, &params.limit, 0, INT_MAX) != KNOT_EOK) {
+				print_help();
+				return EXIT_FAILURE;
+			}
+			break;
+		case 'C':
+			if (str_to_int(optarg, &params.cutoff, 0, INT_MAX) != KNOT_EOK) {
 				print_help();
 				return EXIT_FAILURE;
 			}
