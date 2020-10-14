@@ -26,3 +26,14 @@
  * \param[in] server Server instance.
  */
 void zonedb_reload(conf_t *conf, server_t *server);
+
+/*!
+ * \brief Re-create zone_t struct in zoneDB so that the zone is reloaded incl modules.
+ *
+ * \param conf       Configuration.
+ * \param server     Server instance.
+ * \param zone_name  Name of zone to be reloaded.
+ *
+ * \return KNOT_E*
+ */
+int zone_reload_modules(conf_t *conf, server_t *server, const knot_dname_t *zone_name);
