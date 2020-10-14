@@ -42,6 +42,7 @@ static void print_help(void)
 	       " -z, --zone-list    Instead of reading jurnal, display the list\n"
 	       "                    of zones in the DB (<zone_name> not needed).\n"
 	       " -c, --check        Additional journal semantic checks.\n"
+	       " -D, --depth        Display depth at each changeset.\n"
 	       " -d, --debug        Debug mode output.\n"
 	       " -h, --help         Print the program help.\n"
 	       " -V, --version      Print the program version.\n",
@@ -52,7 +53,9 @@ typedef struct {
 	bool debug;
 	bool color;
 	bool check;
+	bool depth;
 	int limit;
+	int start_at;
 	int counter;
 	long from_serial;
 } print_params_t;
@@ -65,6 +68,11 @@ static void print_changeset(const changeset_t *chs, print_params_t *params)
 	if (chs->soa_from == NULL) {
 		printf(";; Zone-in-journal, serial: %u\n",
 		       knot_soa_serial(chs->soa_to->rrs.rdata));
+	} else if (params->depth) {
+		printf(";; Changes between zone versions: %u -> %u (depth %d)\n",
+		       knot_soa_serial(chs->soa_from->rrs.rdata),
+		       knot_soa_serial(chs->soa_to->rrs.rdata),
+		       params->limit - (params->counter - params->start_at) + 1);
 	} else {
 		printf(";; Changes between zone versions: %u -> %u\n",
 		       knot_soa_serial(chs->soa_from->rrs.rdata),
@@ -147,7 +155,7 @@ static int count_changeset_cb(bool special, const changeset_t *ch, void *ctx)
 static int print_changeset_cb(bool special, const changeset_t *ch, void *ctx)
 {
 	print_params_t *params = ctx;
-	if (ch != NULL && params->counter++ >= params->limit) {
+	if (ch != NULL && params->counter++ >= params->start_at) {
 		if (params->debug) {
 			print_changeset_debugmode(ch);
 		} else {
@@ -195,7 +203,7 @@ int print_journal(char *path, knot_dname_t *name, print_params_t *params)
 		}
 	}
 
-	if (params->limit >= 0 && ret == KNOT_EOK) {
+	if ((params->limit >= 0 || params->depth) && ret == KNOT_EOK) {
 		if (params->from_serial < 0) {
 			ret = journal_walk(j, count_changeset_cb, params);
 		} else {
@@ -204,9 +212,10 @@ int print_journal(char *path, knot_dname_t *name, print_params_t *params)
 	}
 	if (ret == KNOT_EOK) {
 		if (params->limit < 0 || params->counter <= params->limit) {
-			params->limit = 0;
+			params->start_at = 0;
+			params->limit = params->counter;
 		} else {
-			params->limit = params->counter - params->limit;
+			params->start_at = params->counter - params->limit;
 		}
 		params->counter = 0;
 		if (params->from_serial < 0) {
@@ -293,6 +302,7 @@ int main(int argc, char *argv[])
 		.debug = false,
 		.color = true,
 		.check = false,
+		.depth = false,
 		.limit = -1,
 		.from_serial = -1,
 	};
@@ -301,6 +311,7 @@ int main(int argc, char *argv[])
 		{ "limit",     required_argument, NULL, 'l' },
 		{ "serial",    required_argument, NULL, 's' },
 		{ "no-color",  no_argument,       NULL, 'n' },
+		{ "depth",     no_argument,       NULL, 'D' },
 		{ "zone-list", no_argument,       NULL, 'z' },
 		{ "check",     no_argument,       NULL, 'c' },
 		{ "debug",     no_argument,       NULL, 'd' },
@@ -310,7 +321,7 @@ int main(int argc, char *argv[])
 	};
 
 	int opt = 0;
-	while ((opt = getopt_long(argc, argv, "l:s:nzcdhV", opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "l:s:nDzcdhV", opts, NULL)) != -1) {
 		switch (opt) {
 		case 'l':
 			if (str_to_int(optarg, &params.limit, 0, INT_MAX) != KNOT_EOK) {
@@ -326,6 +337,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'n':
 			params.color = false;
+			break;
+		case 'D':
+			params.depth = true;
 			break;
 		case 'z':
 			justlist = true;

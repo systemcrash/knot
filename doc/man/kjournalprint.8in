@@ -52,6 +52,9 @@ Debug mode brief output.
 \fB\-n\fP, \fB\-\-no\-color\fP
 Removes changes coloring.
 .TP
+\fB\-D\fP, \fB\-\-depth\fP
+Display depth at each changeset.
+.TP
 \fB\-z\fP, \fB\-\-zone\-list\fP
 Instead of reading jurnal, display the list of zones in the DB.
 (\fIzone_name\fP not needed)

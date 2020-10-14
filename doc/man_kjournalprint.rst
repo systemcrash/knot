@@ -29,6 +29,9 @@ Options
 **-n**, **--no-color**
   Removes changes coloring.
 
+**-D**, **--depth**
+  Display depth at each changeset.
+
 **-z**, **--zone-list**
   Instead of reading jurnal, display the list of zones in the DB.
   (*zone_name* not needed)
