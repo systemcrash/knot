@@ -97,6 +97,11 @@ inline static int str_to_int(const char *src, int *dst, int min, int max)
 	CONVERT(int, int, min, max, src, dst);
 }
 
+inline static int str_to_long(const char *src, long *dst, long min, long max)
+{
+	CONVERT(int, long, min, max, src, dst);
+}
+
 inline static int str_to_u8(const char *src, uint8_t *dst)
 {
 	CONVERT(uint, uint8_t, 0, UINT8_MAX, src, dst);
