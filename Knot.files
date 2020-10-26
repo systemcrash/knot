@@ -415,6 +415,8 @@ src/libknot/xdp/bpf-user.c
 src/libknot/xdp/bpf-user.h
 src/libknot/xdp/eth.c
 src/libknot/xdp/eth.h
+src/libknot/xdp/protocols.c
+src/libknot/xdp/protocols.h
 src/libknot/xdp/xdp.c
 src/libknot/xdp/xdp.h
 src/libknot/yparser/yparser.c
