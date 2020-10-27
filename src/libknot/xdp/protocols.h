@@ -33,7 +33,7 @@ typedef enum {
 	KNOT_XDP_FIN    = (1 << 4), /*!< FIN flag set (TCP only). */
 } knot_xdp_flags_t;
 
-/*! \brief A packet with src & dst MAC & IP addrs + UDP payload. */
+/*! \brief A packet with src & dst MAC & IP addrs + DNS payload. */
 typedef struct knot_xdp_msg knot_xdp_msg_t;
 struct knot_xdp_msg {
 	struct sockaddr_in6 ip_from;
@@ -47,13 +47,14 @@ struct knot_xdp_msg {
 };
 
 typedef enum {
-	KNOT_XDP_DNS_MSG,                              // payload is a single DNS message
-	KNOT_XDP_DNS_PAYLOAD,                          // payload is a fraction of s data stream formed from DNS messages
-	KNOT_XDP_ETHH,                                 // ethernet frame
-	KNOT_XDP_IPV4H = __constant_htons(ETH_P_IP),   // IPv4 frame
-	KNOT_XDP_IPV6H = __constant_htons(ETH_P_IPV6), // IPv6 frame
-	KNOT_XDP_UDPH = IPPROTO_UDP,                   // UDP frame
-	KNOT_XDP_TCPH = IPPROTO_TCP,                   // TCP frame
+	KNOT_XDP_H_NONE = 0,                            // unknown/any payload follows
+	KNOT_XDP_H_DNS_MSG,                             // payload is a single DNS message
+	KNOT_XDP_H_DNS_PAYLOAD,                         // payload is a fraction of s data stream formed from DNS messages
+	KNOT_XDP_H_ETH,                                 // ethernet frame
+	KNOT_XDP_H_IPV4 = __constant_htons(ETH_P_IP),   // IPv4 frame
+	KNOT_XDP_H_IPV6 = __constant_htons(ETH_P_IPV6), // IPv6 frame
+	KNOT_XDP_H_UDP = IPPROTO_UDP,                   // UDP frame
+	KNOT_XDP_H_TCP = IPPROTO_TCP,                   // TCP frame
 } knot_xdp_proto_t;
 
 typedef struct {
@@ -63,4 +64,50 @@ typedef struct {
 	uint16_t next_proto;
 } knot_xdp_payload_t;
 
+/*!
+ * \brief Parse incomming packet's eth, IP and UDP/TCP headers.
+ *
+ * \param p     Ethernet frame of incomming packet.
+ * \param msg   Optional: msg struct to be filled with parsed details.
+ *
+ * \return DNS payload of incomming packet, or KNOT_E*
+ */
+knot_xdp_payload_t knot_xdp_read_all(knot_xdp_payload_t p, knot_xdp_msg_t *msg);
 
+/*!
+ * \brief Prepare headers for outgoing packet.
+ *
+ * \param buf     Pointer to future ethernet frame of the msg.
+ * \param flags   Basic properties of outgoing msg.
+ *
+ * \return Pointer where the DNS payload shall be inserted.
+ */
+void *knot_xdp_reserve(void *buf, knot_xdp_flags_t flags);
+
+/*!
+ * \brief Write outgoing packet's eth, IP and UDP/TCP headers.
+ *
+ * \warning Packet payload must be written beforehand, otherwise incorrect checksum.
+ *
+ * \warning Frame length must be already set according to payload length.
+ *
+ * \param p      Pointer to ethernet frame of the msg.
+ * \param msg    Msg struct with packet details.
+ *
+ * \return KNOT_E*
+ */
+int knot_xdp_write_all(knot_xdp_payload_t p, knot_xdp_msg_t *msg);
+
+/*!
+ * \brief If true, then this message is empty and shall not be sent.
+ */
+bool knot_xdp_empty_msg(knot_xdp_msg_t *msg);
+
+/*!
+ * \brief If true, the pointer on a packet is invalid and points to zeroed space.
+ */
+bool knot_xdp_zero_header(void *hdr);
+
+void knot_xdp_msg_init(knot_xdp_msg_t *msg, void *buf, size_t buf_size, knot_xdp_flags_t flags);
+
+void knot_xdp_msg_answer(knot_xdp_msg_t *msg, void *buf, size_t buf_size, knot_xdp_msg_t *from);

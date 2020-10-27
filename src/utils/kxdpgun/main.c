@@ -142,7 +142,7 @@ static int alloc_pkts(knot_xdp_msg_t *pkts, int npkts, struct knot_xdp_socket *x
 	uint64_t unique = (tick * ctx->n_threads + ctx->thread_id) * ctx->at_once;
 
 	for (int i = 0; i < npkts; i++) {
-		int ret = knot_xdp_send_alloc(xsk, ctx->ipv6, &pkts[i], NULL);
+		int ret = knot_xdp_send_alloc(xsk, ctx->ipv6 ? KNOT_XDP_IPV6 : 0, &pkts[i], NULL);
 		if (ret != KNOT_EOK) {
 			return ret;
 		}

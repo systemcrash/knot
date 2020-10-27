@@ -22,6 +22,7 @@
 #include <netinet/in.h>
 
 #include "libknot/xdp/bpf-consts.h"
+#include "libknot/xdp/protocols.h"
 
 #ifdef ENABLE_XDP
 #define KNOT_XDP_AVAILABLE	1
@@ -106,7 +107,7 @@ void knot_xdp_send_prepare(knot_xdp_socket_t *socket);
  *
  * \return KNOT_E*
  */
-int knot_xdp_send_alloc(knot_xdp_socket_t *socket, bool ipv6, knot_xdp_msg_t *out,
+int knot_xdp_send_alloc(knot_xdp_socket_t *socket, knot_xdp_flags_t flags, knot_xdp_msg_t *out,
                         const knot_xdp_msg_t *in_reply_to);
 
 /*!

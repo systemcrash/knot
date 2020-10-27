@@ -300,190 +300,59 @@ static struct umem_frame *alloc_tx_frame(struct kxsk_umem *umem)
 }
 
 _public_
-int knot_xdp_send_alloc(knot_xdp_socket_t *socket, bool ipv6, knot_xdp_msg_t *out,
+int knot_xdp_send_alloc(knot_xdp_socket_t *socket, knot_xdp_flags_t flags, knot_xdp_msg_t *out,
                         const knot_xdp_msg_t *in_reply_to)
 {
 	if (socket == NULL || out == NULL) {
 		return KNOT_EINVAL;
 	}
 
-	size_t ofs = ipv6 ? KNOT_XDP_PAYLOAD_OFFSET6 : KNOT_XDP_PAYLOAD_OFFSET4;
-
 	struct umem_frame *uframe = alloc_tx_frame(socket->umem);
 	if (uframe == NULL) {
 		return KNOT_ENOMEM;
 	}
 
-	memset(out, 0, sizeof(*out));
-
-	out->payload.iov_base = ipv6 ? uframe->udpv6.data : uframe->udpv4.data;
-	out->payload.iov_len = MIN(UINT16_MAX, FRAME_SIZE - ofs);
-
-	const struct ethhdr *eth = (struct ethhdr *)uframe;
-	out->eth_from = (void *)&eth->h_source;
-	out->eth_to = (void *)&eth->h_dest;
-
-	if (in_reply_to != NULL) {
-		memcpy(out->eth_from, in_reply_to->eth_to, ETH_ALEN);
-		memcpy(out->eth_to, in_reply_to->eth_from, ETH_ALEN);
-
-		memcpy(&out->ip_from, &in_reply_to->ip_to, sizeof(out->ip_from));
-		memcpy(&out->ip_to, &in_reply_to->ip_from, sizeof(out->ip_to));
+	if (in_reply_to == NULL) {
+		knot_xdp_msg_init(out, uframe, FRAME_SIZE, flags);
+	} else {
+		knot_xdp_msg_answer(out, uframe, FRAME_SIZE, in_reply_to);
 	}
 
 	return KNOT_EOK;
 }
 
-static uint16_t from32to16(uint32_t sum)
+static uint8_t *uframe_find_header(uint8_t *uframe_p)
 {
-	sum = (sum & 0xffff) + (sum >> 16);
-	sum = (sum & 0xffff) + (sum >> 16);
-	return sum;
+	if (knot_xdp_zero_header(uframe_p)) {
+		uframe_p += XDP_PACKET_HEADROOM;
+	}
+	return uframe_p;
 }
 
-static uint16_t ipv4_checksum(const uint8_t *ipv4_hdr)
-{
-	const uint16_t *h = (const uint16_t *)ipv4_hdr;
-	uint32_t sum32 = 0;
-	for (int i = 0; i < 10; ++i) {
-		if (i != 5) {
-			sum32 += h[i];
-		}
-	}
-	return ~from32to16(sum32);
-}
-
-/* Checksum endianness implementation notes for ipv4_checksum() and udp_checksum_step().
- *
- * The basis for checksum is addition on big-endian 16-bit words, with bit 16 carrying
- * over to bit 0.  That can be viewed as first byte carrying to the second and the
- * second one carrying back to the first one, i.e. a symmetrical situation.
- * Therefore the result is the same even when arithmetics is done on litte-endian (!)
- */
-
-static void udp_checksum_step(size_t *result, const void *_data, size_t _data_len)
-{
-	assert(!(_data_len & 1));
-	const uint16_t *data = _data;
-	size_t len = _data_len / 2;
-	while (len-- > 0) {
-		*result += *data++;
-	}
-}
-
-static void udp_checksum_finish(size_t *result)
-{
-	while (*result > 0xffff) {
-		*result = (*result & 0xffff) + (*result >> 16);
-	}
-	if (*result != 0xffff) {
-		*result = ~*result;
-	}
-}
-
-static uint8_t *msg_uframe_ptr(knot_xdp_socket_t *socket, const knot_xdp_msg_t *msg,
-                               /* Next parameters are just for debugging. */
-                               bool ipv6)
+static uint8_t *msg_uframe_ptr(knot_xdp_socket_t *socket, const knot_xdp_msg_t *msg)
 {
 	uint8_t *uNULL = NULL;
 	uint8_t *uframe_p = uNULL + ((msg->payload.iov_base - NULL) & ~(FRAME_SIZE - 1));
 
 #ifndef NDEBUG
-	intptr_t pd = (uint8_t *)msg->payload.iov_base - uframe_p
-	              - (ipv6 ? KNOT_XDP_PAYLOAD_OFFSET6 : KNOT_XDP_PAYLOAD_OFFSET4);
-	/* This assertion might fire in some OK cases.  For example, the second branch
-	 * had to be added for cases with "emulated" AF_XDP support. */
-	assert(pd == XDP_PACKET_HEADROOM || pd == 0);
+	uint8_t *hdr_p = uframe_find_header(uframe_p);
+
+	knot_xdp_payload_t p = {
+		.buf = uframe_p,
+		.len = msg->payload.iov_len + (msg->payload.iov_base - hdr_p),
+		.err = KNOT_EOK,
+		.next_proto = KNOT_XDP_H_ETH,
+	};
+
+	p = knot_xdp_read_all(p, NULL);
+	assert(p.buf == msg->payload.iov_base);
+	assert(p.len == msg->payload.iov_len);
 
 	const uint8_t *umem_mem_start = socket->umem->frames->bytes;
 	const uint8_t *umem_mem_end = umem_mem_start + FRAME_SIZE * UMEM_FRAME_COUNT;
 	assert(umem_mem_start <= uframe_p && uframe_p < umem_mem_end);
 #endif
 	return uframe_p;
-}
-
-static void xsk_sendmsg_ipv4(knot_xdp_socket_t *socket, const knot_xdp_msg_t *msg,
-                             uint32_t index)
-{
-	uint8_t *uframe_p = msg_uframe_ptr(socket, msg, false);
-	struct umem_frame *uframe = (struct umem_frame *)uframe_p;
-	struct udpv4 *h = &uframe->udpv4;
-
-	const struct sockaddr_in *src_v4 = (const struct sockaddr_in *)&msg->ip_from;
-	const struct sockaddr_in *dst_v4 = (const struct sockaddr_in *)&msg->ip_to;
-	const uint16_t udp_len = sizeof(h->udp) + msg->payload.iov_len;
-
-	h->eth.h_proto = __constant_htons(ETH_P_IP);
-
-	h->ipv4.version  = IPVERSION;
-	h->ipv4.ihl      = 5;
-	h->ipv4.tos      = 0;
-	h->ipv4.tot_len  = htobe16(5 * 4 + udp_len);
-	h->ipv4.id       = 0;
-	h->ipv4.frag_off = 0;
-	h->ipv4.ttl      = IPDEFTTL;
-	h->ipv4.protocol = IPPROTO_UDP;
-	memcpy(&h->ipv4.saddr, &src_v4->sin_addr, sizeof(src_v4->sin_addr));
-	memcpy(&h->ipv4.daddr, &dst_v4->sin_addr, sizeof(dst_v4->sin_addr));
-	h->ipv4.check    = ipv4_checksum(h->bytes + sizeof(struct ethhdr));
-
-	h->udp.len    = htobe16(udp_len);
-	h->udp.source = src_v4->sin_port;
-	h->udp.dest   = dst_v4->sin_port;
-	h->udp.check  = 0; // Optional for IPv4 - not computed.
-
-	*xsk_ring_prod__tx_desc(&socket->tx, index) = (struct xdp_desc){
-		.addr = h->bytes - socket->umem->frames->bytes,
-		.len = KNOT_XDP_PAYLOAD_OFFSET4 + msg->payload.iov_len
-	};
-}
-
-static void xsk_sendmsg_ipv6(knot_xdp_socket_t *socket, const knot_xdp_msg_t *msg,
-                             uint32_t index)
-{
-	uint8_t *uframe_p = msg_uframe_ptr(socket, msg, true);
-	struct umem_frame *uframe = (struct umem_frame *)uframe_p;
-	struct udpv6 *h = &uframe->udpv6;
-
-	const struct sockaddr_in6 *src_v6 = (const struct sockaddr_in6 *)&msg->ip_from;
-	const struct sockaddr_in6 *dst_v6 = (const struct sockaddr_in6 *)&msg->ip_to;
-	const uint16_t udp_len = sizeof(h->udp) + msg->payload.iov_len;
-
-	h->eth.h_proto = __constant_htons(ETH_P_IPV6);
-
-	h->ipv6.version     = 6;
-	h->ipv6.priority    = 0;
-	memset(h->ipv6.flow_lbl, 0, sizeof(h->ipv6.flow_lbl));
-	h->ipv6.payload_len = htobe16(udp_len);
-	h->ipv6.nexthdr     = IPPROTO_UDP;
-	h->ipv6.hop_limit   = IPDEFTTL;
-	memcpy(&h->ipv6.saddr, &src_v6->sin6_addr, sizeof(src_v6->sin6_addr));
-	memcpy(&h->ipv6.daddr, &dst_v6->sin6_addr, sizeof(dst_v6->sin6_addr));
-
-	h->udp.len    = htobe16(udp_len);
-	h->udp.source = src_v6->sin6_port;
-	h->udp.dest   = dst_v6->sin6_port;
-	h->udp.check  = 0; // Mandatory for IPv6 - computed afterwards.
-
-	size_t chk = 0;
-	udp_checksum_step(&chk, &h->ipv6.saddr, sizeof(h->ipv6.saddr));
-	udp_checksum_step(&chk, &h->ipv6.daddr, sizeof(h->ipv6.daddr));
-	udp_checksum_step(&chk, &h->udp.len, sizeof(h->udp.len));
-	__be16 version = htobe16(h->ipv6.nexthdr);
-	udp_checksum_step(&chk, &version, sizeof(version));
-	udp_checksum_step(&chk, &h->udp, sizeof(h->udp));
-	size_t padded_len = msg->payload.iov_len;
-	if (padded_len & 1) {
-		((uint8_t *)msg->payload.iov_base)[padded_len++] = 0;
-	}
-	udp_checksum_step(&chk, msg->payload.iov_base, padded_len);
-	udp_checksum_finish(&chk);
-	h->udp.check = chk;
-
-	*xsk_ring_prod__tx_desc(&socket->tx, index) = (struct xdp_desc){
-		.addr = h->bytes - socket->umem->frames->bytes,
-		.len = KNOT_XDP_PAYLOAD_OFFSET6 + msg->payload.iov_len
-	};
 }
 
 _public_
@@ -503,26 +372,47 @@ int knot_xdp_send(knot_xdp_socket_t *socket, const knot_xdp_msg_t msgs[],
 	 */
 	assert(UMEM_RING_LEN_TX > UMEM_FRAME_COUNT_TX);
 	uint32_t idx = socket->tx.cached_prod;
+	int ret = KNOT_EOK;
 
 	for (uint32_t i = 0; i < count; ++i) {
 		const knot_xdp_msg_t *msg = &msgs[i];
 
-		if (msg->payload.iov_len && msg->ip_from.sin6_family == AF_INET) {
-			xsk_sendmsg_ipv4(socket, msg, idx++);
-		} else if (msg->payload.iov_len && msg->ip_from.sin6_family == AF_INET6) {
-			xsk_sendmsg_ipv6(socket, msg, idx++);
-		} else {
-			/* Some problem; we just ignore this message. */
+		if (knot_xdp_empty_msg(msg) || ret != KNOT_EOK) {
+			uint64_t addr_relative = (uint8_t *)msg->payload.iov_base
+			                         - socket->umem->frames->bytes;
+			tx_free_relative(socket->umem, addr_relative);
+		if (!knot_xdp_empty_msg(msg) && ret == KNOT_EOK) {
+			uint8_t *uframe_p = uframe_find_header(msg_uframe_ptr(socket, msg));
+			size_t uframe_len = msg->payload.iov_len + (msg->payload.iov_base - uframe_p);
+
+			knot_xdp_payload_t p = {
+				.buf = uframe_p,
+				.len = uframe_len,
+				.err = ret,
+				.next_proto = KNOT_XDP_H_NONE,
+			};
+			ret = knot_xdp_write_all(p, msg);
+			if (ret == KNOT_EOK) {
+				*xsk_ring_prod__tx_desc(&socket->tx, idx++) = (struct xdp_desc) {
+					.addr = uframe_p - socket->umem->frames->bytes,
+					.len = uframe_len,
+				};
+				(*sent)++;
+			}
+
+
+		}
+		if (knot_xdp_empty_msg(msg) || ret != KNOT_EOK) {
 			uint64_t addr_relative = (uint8_t *)msg->payload.iov_base
 			                         - socket->umem->frames->bytes;
 			tx_free_relative(socket->umem, addr_relative);
 		}
 	}
 
-	*sent = idx - socket->tx.cached_prod;
-	assert(*sent <= count);
+	uint32_t sent2 = idx - socket->tx.cached_prod;
+	assert(sent2 <= count);
 	socket->tx.cached_prod = idx;
-	xsk_ring_prod__submit(&socket->tx, *sent);
+	xsk_ring_prod__submit(&socket->tx, sent2);
 	socket->kernel_needs_wakeup = true;
 
 	return KNOT_EOK;
@@ -565,75 +455,6 @@ int knot_xdp_send_finish(knot_xdp_socket_t *socket)
 	 */
 }
 
-static void rx_desc(knot_xdp_socket_t *socket, const struct xdp_desc *desc,
-                    knot_xdp_msg_t *msg)
-{
-	uint8_t *uframe_p = socket->umem->frames->bytes + desc->addr;
-	const struct ethhdr *eth = (struct ethhdr *)uframe_p;
-	const struct iphdr *ip4 = NULL;
-	const struct ipv6hdr *ip6 = NULL;
-	const struct udphdr *udp = NULL;
-
-	switch (eth->h_proto) {
-	case __constant_htons(ETH_P_IP):
-		ip4 = (struct iphdr *)(uframe_p + sizeof(struct ethhdr));
-		// Next conditions are ensured by the BPF filter.
-		assert(ip4->version == 4);
-		assert(ip4->frag_off == 0 ||
-		       ip4->frag_off == __constant_htons(IP_DF));
-		assert(ip4->protocol == IPPROTO_UDP);
-		// IPv4 header checksum is not verified!
-		udp = (struct udphdr *)(uframe_p + sizeof(struct ethhdr) +
-		                        ip4->ihl * 4);
-		break;
-	case __constant_htons(ETH_P_IPV6):
-		ip6 = (struct ipv6hdr *)(uframe_p + sizeof(struct ethhdr));
-		// Next conditions are ensured by the BPF filter.
-		assert(ip6->version == 6);
-		assert(ip6->nexthdr == IPPROTO_UDP);
-		udp = (struct udphdr *)(uframe_p + sizeof(struct ethhdr) +
-		                        sizeof(struct ipv6hdr));
-		break;
-	default:
-		assert(0);
-		msg->payload.iov_len = 0;
-		return;
-	}
-	// UDP checksum is not verified!
-
-	assert(eth && (!!ip4 != !!ip6) && udp);
-
-	// Process the packet; ownership is passed on, beware of holding frames.
-
-	msg->payload.iov_base = (uint8_t *)udp + sizeof(struct udphdr);
-	msg->payload.iov_len = be16toh(udp->len) - sizeof(struct udphdr);
-
-	msg->eth_from = (void *)&eth->h_source;
-	msg->eth_to = (void *)&eth->h_dest;
-
-	if (ip4 != NULL) {
-		struct sockaddr_in *src_v4 = (struct sockaddr_in *)&msg->ip_from;
-		struct sockaddr_in *dst_v4 = (struct sockaddr_in *)&msg->ip_to;
-		memcpy(&src_v4->sin_addr, &ip4->saddr, sizeof(src_v4->sin_addr));
-		memcpy(&dst_v4->sin_addr, &ip4->daddr, sizeof(dst_v4->sin_addr));
-		src_v4->sin_port = udp->source;
-		dst_v4->sin_port = udp->dest;
-		src_v4->sin_family = AF_INET;
-		dst_v4->sin_family = AF_INET;
-	} else {
-		assert(ip6);
-		struct sockaddr_in6 *src_v6 = (struct sockaddr_in6 *)&msg->ip_from;
-		struct sockaddr_in6 *dst_v6 = (struct sockaddr_in6 *)&msg->ip_to;
-		memcpy(&src_v6->sin6_addr, &ip6->saddr, sizeof(src_v6->sin6_addr));
-		memcpy(&dst_v6->sin6_addr, &ip6->daddr, sizeof(dst_v6->sin6_addr));
-		src_v6->sin6_port = udp->source;
-		dst_v6->sin6_port = udp->dest;
-		src_v6->sin6_family = AF_INET6;
-		dst_v6->sin6_family = AF_INET6;
-		// Flow label is ignored.
-	}
-}
-
 _public_
 int knot_xdp_recv(knot_xdp_socket_t *socket, knot_xdp_msg_t msgs[],
                   uint32_t max_count, uint32_t *count)
@@ -643,21 +464,39 @@ int knot_xdp_recv(knot_xdp_socket_t *socket, knot_xdp_msg_t msgs[],
 	}
 
 	uint32_t idx = 0;
+	int ret = KNOT_EOK;
+	assert(*count == 0);
 	const uint32_t available = xsk_ring_cons__peek(&socket->rx, max_count, &idx);
 	if (available == 0) {
-		*count = 0;
 		return KNOT_EOK;
 	}
 	assert(available <= max_count);
 
 	for (uint32_t i = 0; i < available; ++i) {
+		const struct xdp_desc *desc = xsk_ring_cons__rx_desc(&socket->rx, idx++);
+		uint8_t *uframe_p = socket->umem->frames->bytes + desc->addr;
+
+		knot_xdp_payload_t p = {
+			.buf = uframe_p,
+			.len = FRAME_SIZE,
+			.err = KNOT_EOK,
+			.next_proto = KNOT_XDP_H_ETH,
+		};
+		p = knot_xdp_read_all(p, &msgs[i]);
+
 		rx_desc(socket, xsk_ring_cons__rx_desc(&socket->rx, idx++), &msgs[i]);
+
+		if (p.err == KNOT_EOK) {
+			(*count)++;
+		} else {
+			ret = p.err;
+			break;
+		}
 	}
 
-	xsk_ring_cons__release(&socket->rx, available);
-	*count = available;
+	xsk_ring_cons__release(&socket->rx, *count);
 
-	return KNOT_EOK;
+	return ret;
 }
 
 _public_
@@ -676,8 +515,7 @@ void knot_xdp_recv_finish(knot_xdp_socket_t *socket, const knot_xdp_msg_t msgs[]
 	assert(reserved == count);
 
 	for (uint32_t i = 0; i < reserved; ++i) {
-		uint8_t *uframe_p = msg_uframe_ptr(socket, &msgs[i],
-		                                   msgs[i].ip_from.sin6_family == AF_INET6);
+		uint8_t *uframe_p = msg_uframe_ptr(socket, &msgs[i]);
 		uint64_t offset = uframe_p - umem->frames->bytes;
 		*xsk_ring_prod__fill_addr(fq, idx++) = offset;
 	}
